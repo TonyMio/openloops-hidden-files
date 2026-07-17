@@ -20,7 +20,8 @@ import {
   Notice,
   Plugin,
   PluginSettingTab,
-  Setting,
+  type SettingDefinitionItem,
+  SuggestModal,
   TAbstractFile,
   normalizePath,
 } from "obsidian";
@@ -393,92 +394,113 @@ class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
+  // Declarative settings (Obsidian 1.13+): describe the settings, not the DOM.
+  // Obsidian renders, indexes them for settings-search, and calls update() re-runs.
+  getSettingDefinitions(): SettingDefinitionItem[] {
     if (!this.plugin.indexer.isSupported()) {
-      containerEl.createEl("p", {
-        text:
-          "This Obsidian build does not expose the filesystem internals this plugin " +
-          "needs (mobile, or an unexpected desktop version). The plugin is inactive.",
-      });
-      return;
+      return [
+        {
+          name: "Plugin inactive",
+          desc:
+            "This Obsidian build does not expose the filesystem internals this " +
+            "plugin needs (mobile, or an unexpected desktop version).",
+          searchable: false,
+        },
+      ];
     }
 
-    new Setting(containerEl)
-      .setName("Revealed dot-folders")
-      .setDesc(
-        "Revealed folders also join search and the graph and become readable by " +
+    return [
+      {
+        name: "Revealed dot-folders",
+        desc:
+          "Revealed folders also join search and the graph and become readable by " +
           "every other installed plugin, so do not reveal folders that hold secrets " +
           "or credentials. Avoid large version-control folders too; scanning them " +
           "can freeze Obsidian.",
-      )
-      .setHeading();
+        searchable: false,
+      },
+      {
+        type: "list",
+        heading: "Folders",
+        emptyState: "No folders revealed yet. Use the + button to add one.",
+        items: this.plugin.settings.folders.map((folder) => ({ name: folder })),
+        onDelete: (index: number) => {
+          void this.removeAt(index);
+        },
+        addItem: {
+          name: "Add folder",
+          action: () => {
+            void this.openAddFlow();
+          },
+        },
+      },
+    ];
+  }
 
-    // Existing entries, each with a remove button.
-    if (this.plugin.settings.folders.length === 0) {
-      containerEl.createEl("p", {
-        text: "No folders revealed yet. Add one below.",
-        cls: "setting-item-description",
-      });
+  private async removeAt(index: number): Promise<void> {
+    const folders = this.plugin.settings.folders;
+    if (index < 0 || index >= folders.length) return;
+    folders.splice(index, 1);
+    await this.plugin.saveSettings();
+    await this.plugin.applyFolders();
+    this.update();
+  }
+
+  private async addFolder(rawValue: string): Promise<void> {
+    const value = rawValue.trim();
+    if (value.length === 0) return;
+    if (!this.plugin.indexer.isAcceptablePath(value)) {
+      new Notice("Enter a folder inside the vault (no '..' or absolute paths).");
+      return;
     }
-    for (const folder of [...this.plugin.settings.folders]) {
-      new Setting(containerEl).setName(folder).addButton((btn) =>
-        btn
-          .setButtonText("Remove")
-          .onClick(async () => {
-            this.plugin.settings.folders = this.plugin.settings.folders.filter(
-              (f) => f !== folder,
-            );
-            await this.plugin.saveSettings();
-            await this.plugin.applyFolders();
-            this.display();
-          }),
-      );
+    if (this.plugin.settings.folders.includes(value)) {
+      new Notice("That folder is already revealed.");
+      return;
     }
+    this.plugin.settings.folders.push(value);
+    await this.plugin.saveSettings();
+    await this.plugin.applyFolders();
+    this.update();
+  }
 
-    // Add-a-folder control, pre-populated with detected hidden root folders.
-    let pending = "";
-    void this.plugin.indexer.listHiddenRootFolders().then((detected) => {
-      const available = detected.filter((d) => !this.plugin.settings.folders.includes(d));
-      const add = new Setting(containerEl)
-        .setName("Add a folder")
-        .setDesc("Pick a detected root dot-folder, or type any vault-relative path.");
+  private async openAddFlow(): Promise<void> {
+    const detected = (await this.plugin.indexer.listHiddenRootFolders()).filter(
+      (d) => !this.plugin.settings.folders.includes(d),
+    );
+    new AddFolderModal(this.app, detected, (value) => {
+      void this.addFolder(value);
+    }).open();
+  }
+}
 
-      if (available.length > 0) {
-        add.addDropdown((dd) => {
-          dd.addOption("", "Detected folders…");
-          for (const name of available) dd.addOption(name, name);
-          dd.onChange((v) => (pending = v));
-        });
-      }
+/**
+ * Suggester for the "+" affordance: lists detected hidden root folders, and
+ * offers the raw query as a custom entry so any vault-relative path can be added.
+ */
+class AddFolderModal extends SuggestModal<string> {
+  constructor(
+    app: App,
+    private readonly detected: string[],
+    private readonly onChoose: (value: string) => void,
+  ) {
+    super(app);
+    this.setPlaceholder("Pick a detected folder or type a vault-relative path");
+  }
 
-      add
-        .addText((text) => {
-          text.setPlaceholder("Folder path").onChange((v) => (pending = v));
-        })
-        .addButton((btn) =>
-          btn
-            .setButtonText("Add")
-            .setCta()
-            .onClick(async () => {
-              const value = pending.trim();
-              if (value.length === 0) return;
-              if (!this.plugin.indexer.isAcceptablePath(value)) {
-                new Notice("Enter a folder inside the vault (no '..' or absolute paths).");
-                return;
-              }
-              if (this.plugin.settings.folders.includes(value)) {
-                new Notice("That folder is already revealed.");
-                return;
-              }
-              this.plugin.settings.folders.push(value);
-              await this.plugin.saveSettings();
-              await this.plugin.applyFolders();
-              this.display();
-            }),
-        );
-    });
+  getSuggestions(query: string): string[] {
+    const q = query.trim();
+    const matches = this.detected.filter((d) => d.toLowerCase().includes(q.toLowerCase()));
+    if (q.length > 0 && !this.detected.includes(q)) {
+      return [q, ...matches];
+    }
+    return matches;
+  }
+
+  renderSuggestion(value: string, el: HTMLElement): void {
+    el.setText(value);
+  }
+
+  onChooseSuggestion(value: string): void {
+    this.onChoose(value);
   }
 }

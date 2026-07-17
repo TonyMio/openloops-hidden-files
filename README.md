@@ -20,10 +20,10 @@ reveals folders you name, so heavy folders are never touched unless you ask.
 
 1. Enable the plugin (desktop only).
 2. Open **Settings → OpenLoops Hidden Files**.
-3. Add a folder — pick a detected root dot-folder from the dropdown, or type any
-   vault-relative path — and click **Add**. It appears in the file explorer.
-4. Remove it (or disable the plugin) to hide it again. Your files on disk are
-   never modified.
+3. Under **Folders**, click **+** and pick a detected root dot-folder, or type any
+   vault-relative path. It appears in the file explorer.
+4. Remove it with the row's delete button (or disable the plugin) to hide it again.
+   Your files on disk are never modified.
 
 The command **OpenLoops Hidden Files: Rescan hidden folders** re-applies your list,
 useful after adding folders on disk.
