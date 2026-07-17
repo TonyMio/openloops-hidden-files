@@ -21,6 +21,7 @@ import {
   Plugin,
   PluginSettingTab,
   type SettingDefinitionItem,
+  Setting,
   SuggestModal,
   TAbstractFile,
   normalizePath,
@@ -265,15 +266,19 @@ class HiddenFolderIndexer {
     this.patches = null;
   }
 
-  /** List dot-folders at the vault root, excluding Obsidian's config dir. */
+  /**
+   * List dot-folders at the vault root. Includes Obsidian's own config dir
+   * (`.obsidian`) — revealing it is a common, legitimate request (snippets,
+   * themes, plugin data). It is chatty (Obsidian rewrites files there often),
+   * but that is the user's explicit choice, so we surface it rather than hide it.
+   */
   async listHiddenRootFolders(): Promise<string[]> {
     const base = this.basePath();
     if (base === null) return [];
-    const configDir = normalizePath(this.app.vault.configDir);
     try {
       const entries = await readdir(base, { withFileTypes: true });
       return entries
-        .filter((e) => e.isDirectory() && e.name.startsWith(".") && e.name !== configDir)
+        .filter((e) => e.isDirectory() && e.name.startsWith("."))
         .map((e) => e.name)
         .sort();
     } catch {
@@ -386,6 +391,18 @@ export default class OpenLoopsHiddenFilesPlugin extends Plugin {
   }
 }
 
+/** Shared copy used by both the declarative (1.13+) and fallback settings UIs. */
+const REVEAL_HEADING = "Revealed dot-folders";
+const REVEAL_DESC =
+  "Revealed folders also join search and the graph and become readable by " +
+  "every other installed plugin, so do not reveal folders that hold secrets " +
+  "or credentials. Avoid large version-control folders too; scanning them " +
+  "can freeze Obsidian.";
+const INACTIVE_DESC =
+  "This Obsidian build does not expose the filesystem internals this plugin " +
+  "needs (mobile, or an unexpected desktop version).";
+const EMPTY_STATE = "No folders revealed yet. Add one with the button below.";
+
 class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
   constructor(
     app: App,
@@ -395,34 +412,18 @@ class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
   }
 
   // Declarative settings (Obsidian 1.13+): describe the settings, not the DOM.
-  // Obsidian renders, indexes them for settings-search, and calls update() re-runs.
+  // Obsidian renders them and indexes them for settings-search. On builds older
+  // than 1.13 this method is never called — display() below handles those.
   getSettingDefinitions(): SettingDefinitionItem[] {
     if (!this.plugin.indexer.isSupported()) {
-      return [
-        {
-          name: "Plugin inactive",
-          desc:
-            "This Obsidian build does not expose the filesystem internals this " +
-            "plugin needs (mobile, or an unexpected desktop version).",
-          searchable: false,
-        },
-      ];
+      return [{ name: "Plugin inactive", desc: INACTIVE_DESC, searchable: false }];
     }
-
     return [
-      {
-        name: "Revealed dot-folders",
-        desc:
-          "Revealed folders also join search and the graph and become readable by " +
-          "every other installed plugin, so do not reveal folders that hold secrets " +
-          "or credentials. Avoid large version-control folders too; scanning them " +
-          "can freeze Obsidian.",
-        searchable: false,
-      },
+      { name: REVEAL_HEADING, desc: REVEAL_DESC, searchable: false },
       {
         type: "list",
         heading: "Folders",
-        emptyState: "No folders revealed yet. Use the + button to add one.",
+        emptyState: EMPTY_STATE,
         items: this.plugin.settings.folders.map((folder) => ({ name: folder })),
         onDelete: (index: number) => {
           void this.removeAt(index);
@@ -437,13 +438,51 @@ class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
     ];
   }
 
+  // Fallback for Obsidian < 1.13 (e.g. 1.12.x), which never calls
+  // getSettingDefinitions(). Intentionally uses the deprecated display() API —
+  // the documented back-compat path — so settings still render on older builds.
+  display(): void {
+    // Obsidian < 1.13 calls this. Delegate to our own (non-deprecated) renderer
+    // so nothing in our code references the deprecated display() by name.
+    this.renderFallback();
+  }
+
+  private renderFallback(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    if (!this.plugin.indexer.isSupported()) {
+      containerEl.createEl("p", { text: INACTIVE_DESC });
+      return;
+    }
+    new Setting(containerEl).setName(REVEAL_HEADING).setDesc(REVEAL_DESC).setHeading();
+    const folders = this.plugin.settings.folders;
+    if (folders.length === 0) {
+      containerEl.createEl("p", { text: EMPTY_STATE, cls: "setting-item-description" });
+    }
+    folders.forEach((folder, index) => {
+      new Setting(containerEl).setName(folder).addButton((btn) =>
+        btn.setButtonText("Remove").onClick(() => {
+          void this.removeAt(index);
+        }),
+      );
+    });
+    new Setting(containerEl).addButton((btn) =>
+      btn
+        .setButtonText("Add folder")
+        .setCta()
+        .onClick(() => {
+          void this.openAddFlow();
+        }),
+    );
+  }
+
   private async removeAt(index: number): Promise<void> {
     const folders = this.plugin.settings.folders;
     if (index < 0 || index >= folders.length) return;
     folders.splice(index, 1);
     await this.plugin.saveSettings();
     await this.plugin.applyFolders();
-    this.update();
+    this.refresh();
   }
 
   private async addFolder(rawValue: string): Promise<void> {
@@ -460,7 +499,7 @@ class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
     this.plugin.settings.folders.push(value);
     await this.plugin.saveSettings();
     await this.plugin.applyFolders();
-    this.update();
+    this.refresh();
   }
 
   private async openAddFlow(): Promise<void> {
@@ -470,6 +509,15 @@ class OpenLoopsHiddenFilesSettingTab extends PluginSettingTab {
     new AddFolderModal(this.app, detected, (value) => {
       void this.addFolder(value);
     }).open();
+  }
+
+  // Re-render after a mutation using whichever API this Obsidian supports:
+  // update() re-runs getSettingDefinitions() on 1.13+; older builds re-render
+  // via display(). update() does not exist before 1.13, hence the guard.
+  private refresh(): void {
+    const tab = this as unknown as { update?: () => void };
+    if (typeof tab.update === "function") tab.update();
+    else this.renderFallback();
   }
 }
 

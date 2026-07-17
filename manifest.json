@@ -1,8 +1,8 @@
 {
   "id": "openloops-hidden-files",
   "name": "OpenLoops Hidden Files",
-  "version": "1.1.0",
-  "minAppVersion": "1.13.0",
+  "version": "1.1.1",
+  "minAppVersion": "1.5.0",
   "description": "Reveal a chosen list of dot-folders such as .claude or .github in the native file explorer tree. Desktop only, with per-folder opt-in.",
   "author": "TonyMio",
   "authorUrl": "",

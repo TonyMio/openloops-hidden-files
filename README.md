@@ -28,6 +28,11 @@ reveals folders you name, so heavy folders are never touched unless you ask.
 The command **OpenLoops Hidden Files: Rescan hidden folders** re-applies your list,
 useful after adding folders on disk.
 
+You *can* reveal Obsidian's own config folder (`.obsidian`) — it's offered in the
+list — to browse snippets, themes, or plugin data. Note it's chatty: Obsidian
+rewrites files there frequently (e.g. `workspace.json`), so those entries re-index
+in the background as they change.
+
 ## Limitations
 
 - **Desktop only.** Mobile Obsidian does not expose the filesystem primitives the
